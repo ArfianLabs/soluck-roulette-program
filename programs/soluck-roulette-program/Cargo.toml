@@ -17,3 +17,9 @@ default = []
 
 [dependencies]
 anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"
+solana-program = "1.14.12"
+spl-token = "3.5.0"
+num-traits = "0.2"
+num-derive = "0.3"
+
