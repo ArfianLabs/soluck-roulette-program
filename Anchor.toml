@@ -11,7 +11,7 @@ soluck_roulette_program = "EesrPZXx8b6hwLcAMBFtA7RZHyuvs7oFshBoDiK23VBk"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "/home/mert/.config/solana/id.json"
 
 [scripts]
