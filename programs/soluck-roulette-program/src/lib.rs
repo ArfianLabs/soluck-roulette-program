@@ -138,7 +138,12 @@ pub mod soluck_roulette_program {
                 roulette.winner = players[i];
                 break;
             }
-        }
+        } 
+
+        
+        emit!(WinnerEvent {
+            winner: roulette.winner,
+        });
 
         Ok(())
     }
@@ -287,6 +292,11 @@ pub struct EscrowData {
 pub struct EnterRouletteEvent {
     from: Pubkey,
     mint: Pubkey,
+}
+
+#[event]
+pub struct WinnerEvent {
+    winner: Pubkey,
 }
 
 #[error_code]
