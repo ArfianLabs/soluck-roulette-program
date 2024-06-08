@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{
     self, transfer_checked, Token, TokenAccount, Transfer as SplTransfer, TransferChecked,
 };
+use borsh::{BorshDeserialize, BorshSerialize};
 use std::mem::size_of;
 
 declare_id!("EesrPZXx8b6hwLcAMBFtA7RZHyuvs7oFshBoDiK23VBk");
@@ -9,7 +10,11 @@ declare_id!("EesrPZXx8b6hwLcAMBFtA7RZHyuvs7oFshBoDiK23VBk");
 #[program]
 pub mod soluck_roulette_program {
 
-    use solana_program::{program::invoke_signed, system_instruction};
+    use solana_program::{
+        instruction::Instruction,
+        program::{get_return_data, invoke, invoke_signed},
+        system_instruction,
+    };
 
     use super::*;
 
@@ -126,34 +131,73 @@ pub mod soluck_roulette_program {
     pub fn get_random_decide_winner(ctx: Context<GetRandomDecideWinner>, rng: u64) -> Result<()> {
         let config = &ctx.accounts.config;
         let signer = ctx.accounts.sender.key;
-
+        let rng_program = ctx.accounts.rng_program.key;
         if *signer != config.auth {
             return Err(RouletteErrors::NotAuth.into());
         }
 
-        let roulette = &mut ctx.accounts.roulette;
-        let players = &roulette.players;
-        let values = &roulette.values;
+        let instruction = Instruction {
+            program_id: *rng_program,
+            accounts: vec![
+                ctx.accounts.sender.to_account_metas(Some(true))[0].clone(),
+                ctx.accounts.feed_account_1.to_account_metas(Some(false))[0].clone(),
+                ctx.accounts.feed_account_2.to_account_metas(Some(false))[0].clone(),
+                ctx.accounts.feed_account_3.to_account_metas(Some(false))[0].clone(),
+                ctx.accounts.fallback_account.to_account_metas(Some(false))[0].clone(),
+                ctx.accounts
+                    .current_feeds_account
+                    .to_account_metas(Some(false))[0]
+                    .clone(),
+                ctx.accounts.temp.to_account_metas(Some(true))[0].clone(),
+                ctx.accounts.system_program.to_account_metas(Some(false))[0].clone(),
+            ],
+            data: vec![0],
+        };
 
-        let total_value: u64 = values.iter().sum(); // 10
+        let account_infos = &[
+            ctx.accounts.sender.to_account_info().clone(),
+            ctx.accounts.feed_account_1.to_account_info().clone(),
+            ctx.accounts.feed_account_2.to_account_info().clone(),
+            ctx.accounts.feed_account_3.to_account_info().clone(),
+            ctx.accounts.fallback_account.to_account_info().clone(),
+            ctx.accounts.current_feeds_account.to_account_info().clone(),
+            ctx.accounts.temp.to_account_info().clone(),
+            ctx.accounts.system_program.to_account_info().clone(),
+        ];
 
-        let adjusted_winning_number = (rng % total_value) + 1; // 100%10 = 0 + 1 = 1
+        invoke(&instruction, account_infos)?;
 
-        let mut cumulative_value: u64 = 0;
-        for (i, &value) in values.iter().enumerate() {
-            cumulative_value += value; // 10
+        let returned_data: (Pubkey, Vec<u8>) = get_return_data().unwrap();
 
-            if adjusted_winning_number < cumulative_value {
-                roulette.winner = players[i];
-                break;
+        if &returned_data.0 == rng_program {
+            let random_number = RandomNumber::try_from_slice(&returned_data.1)?;
+            let roulette = &mut ctx.accounts.roulette;
+            let players = &roulette.players;
+            let values = &roulette.values;
+
+            let total_value: u64 = values.iter().sum(); // 10
+
+            let adjusted_winning_number = (random_number.random_number % total_value) + 1; 
+
+            let mut cumulative_value: u64 = 0;
+            for (i, &value) in values.iter().enumerate() {
+                cumulative_value += value; // 10
+
+                if adjusted_winning_number < cumulative_value {
+                    roulette.winner = players[i];
+                    break;
+                }
             }
+
+            emit!(WinnerEvent {
+                winner: roulette.winner,
+            });
+
+            Ok(())
+        } else {
+            return Err(RouletteErrors::FailedToGetRandomNumber.into());
         }
-
-        emit!(WinnerEvent {
-            winner: roulette.winner,
-        });
-
-        Ok(())
+  
     }
 
     pub fn update_winner_account(ctx: Context<UpdateWinnerAccount>, index: u64) -> Result<()> {
@@ -202,6 +246,11 @@ pub mod soluck_roulette_program {
 
         Ok(())
     }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct RandomNumber {
+    pub random_number: u64,
 }
 
 #[derive(Accounts)]
@@ -308,11 +357,8 @@ pub struct ClaimWinnings<'info> {
     pub config: Account<'info, ConfigData>,
     #[account(mut)]
     pub sender: Signer<'info>,
-    /// CHECK: Allow passing additional accounts as remaining accounts
-    //pub remaining_accounts: Vec<AccountInfo<'info>>,
     #[account(mut)]
     pub from_ata: Account<'info, TokenAccount>,
-
     #[account(mut)]
     pub to_ata: Account<'info, TokenAccount>,
 
@@ -328,6 +374,25 @@ pub struct GetRandomDecideWinner<'info> {
     pub roulette: Account<'info, RouletteData>,
     #[account(mut)]
     pub sender: Signer<'info>,
+
+    /// CHECK:
+    pub feed_account_1: AccountInfo<'info>,
+    /// CHECK:
+    pub feed_account_2: AccountInfo<'info>,
+    /// CHECK:
+    pub feed_account_3: AccountInfo<'info>,
+    /// CHECK:
+    pub fallback_account: AccountInfo<'info>,
+    #[account(mut)]
+    /// CHECK:
+    pub current_feeds_account: AccountInfo<'info>,
+    /// CHECK:
+    pub rng_program: AccountInfo<'info>,
+    #[account(mut)]
+    /// CHECK:
+    pub temp: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -367,4 +432,6 @@ pub enum RouletteErrors {
     InProgress,
     #[msg("Not the winner")]
     NotWinner,
+    #[msg("Failed to get random number")]
+    FailedToGetRandomNumber,
 }

@@ -264,11 +264,11 @@ describe("soluck-roulette-program", () => {
         fromAta_player1.address
       );
 
-      /* tokens = await connection.getTokenAccountsByOwner(roulettePDA, {
-        programId: TOKEN_PROGRAM_ID,
-      });*/
-
       /*
+      tokens = await connection.getTokenAccountsByOwner(roulettePDA, {
+        programId: TOKEN_PROGRAM_ID,
+      });
+
       await program.methods
         .claimWinnings()
         .accounts({
@@ -281,10 +281,10 @@ describe("soluck-roulette-program", () => {
         .signers([playerOne])
         .rpc();
       playerOneBalance = await connection.getTokenAccountBalance(fromAta);
-      console.log("3bal1: ", playerOneBalance.value.uiAmount);
+      console.log("3bal1: ", playerOneBalance.value.uiAmount);*/
 
       let rouletteState = await program.account.rouletteData.fetch(roulettePDA);
-      //console.log("aft rouletteState: ", rouletteState);*/
+      //console.log("aft rouletteState: ", rouletteState);
     } catch (error) {
       console.log(error);
     }
