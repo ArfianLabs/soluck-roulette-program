@@ -128,7 +128,7 @@ pub mod soluck_roulette_program {
         Ok(())
     }
 
-    pub fn get_random_decide_winner(ctx: Context<GetRandomDecideWinner>, rng: u64) -> Result<()> {
+    pub fn get_random_decide_winner(ctx: Context<GetRandomDecideWinner>) -> Result<()> {
         let config = &ctx.accounts.config;
         let signer = ctx.accounts.sender.key;
         let rng_program = ctx.accounts.rng_program.key;
