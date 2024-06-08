@@ -2,14 +2,17 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SoluckRouletteProgram } from "../target/types/soluck_roulette_program";
 import { PublicKey } from "@solana/web3.js";
-import { createAccountsFilled } from "./utils/utils";
+import { createAccountsFilled, fillAccounts } from "./utils/utils";
 import {
   TOKEN_PROGRAM_ID,
+  AccountLayout,
   createAssociatedTokenAccount,
   createMint,
   getAssociatedTokenAddress,
+  getMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
+  getAccount,
 } from "@solana/spl-token";
 import { assert } from "chai";
 
@@ -19,41 +22,84 @@ describe("soluck-roulette-program", () => {
   // Configure the client to use the local cluster.
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  console.log("anchor: ", provider);
   const program = anchor.workspace
     .SoluckRouletteProgram as Program<SoluckRouletteProgram>;
+
   const connection = program.provider.connection;
   const admin = anchor.web3.Keypair.generate();
+  const playerOne = anchor.web3.Keypair.generate();
+  const playerTwo = anchor.web3.Keypair.generate();
 
   const [configPDA] = PublicKey.findProgramAddressSync(
     [Buffer.from("config")],
     program.programId
   );
 
-  const [roulettePDA] = PublicKey.findProgramAddressSync(
-    [Buffer.from("roulette")],
-    program.programId
-  );
-
   const enterJackpotListener = program.addEventListener(
     "EnterRouletteEvent",
     async (event) => {
-      const total_value = new anchor.BN(1);
-      const sender = event.from;
+      try {
+        const total_value = new anchor.BN(15);
+        const sender = event.from;
+        let configState = await program.account.configData.fetch(configPDA);
 
-      await program.methods
-        .setFloorPrice(sender, total_value)
-        .accounts({
-          roulette: roulettePDA,
-          config: configPDA,
-          auth: admin.publicKey,
-        })
-        .signers([admin])
-        .rpc();
-      let roulettePDAState = await program.account.rouletteData.fetch(
-        roulettePDA
-      );
-      console.log("roulettePDAState: ", roulettePDAState);
+        const rouletteCount = configState.rouletteCount;
+        const [roulettePDA] = PublicKey.findProgramAddressSync(
+          [Buffer.from("roulette"), Buffer.from(rouletteCount.toString())],
+          program.programId
+        );
+        await program.methods
+          .setFloorPrice(sender, total_value)
+          .accounts({
+            roulette: roulettePDA,
+            config: configPDA,
+            auth: admin.publicKey,
+          })
+          .signers([admin])
+          .rpc();
+        let roulettePDAState = await program.account.rouletteData.fetch(
+          roulettePDA
+        );
+        //console.log("YOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO: ", event);
+        //console.log("roulettePDAState: ", roulettePDAState);
+      } catch (error) {
+        console.log("error: ", error);
+      }
+    }
+  );
+
+  const winnerListener = program.addEventListener(
+    "WinnerEvent",
+    async (event) => {
+      try {
+        const winner = event.winner;
+
+        let configState = await program.account.configData.fetch(configPDA);
+
+        const index = configState.rouletteCount;
+
+        const [winnerPDA] = PublicKey.findProgramAddressSync(
+          [Buffer.from("roulette"), winner.toBuffer()],
+          program.programId
+        );
+
+        await program.methods
+          .updateWinnerAccount(index)
+          .accounts({
+            userWinningAccount: winnerPDA,
+            config: configPDA,
+            sender: admin.publicKey,
+          })
+          .signers([admin])
+          .rpc();
+
+        let winnerPDAState = await program.account.userRouletteData.fetch(
+          winnerPDA
+        );
+        //console.log("winnerPDAState: ", winnerPDAState);
+      } catch (error) {
+        console.log("error: ", error);
+      }
     }
   );
 
@@ -74,14 +120,10 @@ describe("soluck-roulette-program", () => {
           .initConfig()
           .accounts({
             config: configPDA,
-            roulette: roulettePDA,
             auth: admin.publicKey,
           })
           .signers([admin])
           .rpc();
-
-        let configState = await program.account.configData.fetch(configPDA);
-        //console.log("configState: ", configState);
       } catch (error) {
         console.log(error);
       }
@@ -92,21 +134,28 @@ describe("soluck-roulette-program", () => {
 
   after(async function () {
     program.removeEventListener(enterJackpotListener);
+    program.removeEventListener(winnerListener);
   });
 
   it("start roulette", async () => {
     try {
+      let configState = await program.account.configData.fetch(configPDA);
+
+      const rouletteCount = configState.rouletteCount;
+      const [roulettePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), Buffer.from(rouletteCount.toString())],
+        program.programId
+      );
+
       await program.methods
         .startRoulette()
         .accounts({
-          roulette: roulettePDA,
           config: configPDA,
+          roulette: roulettePDA,
           auth: admin.publicKey,
         })
         .signers([admin])
         .rpc();
-      let rouletteState = await program.account.rouletteData.fetch(roulettePDA);
-      //console.log("aft rouletteState: ", rouletteState);
     } catch (error) {
       console.log(error);
     }
@@ -114,7 +163,25 @@ describe("soluck-roulette-program", () => {
 
   it("enter roulette", async () => {
     try {
-      const [playerOne, playerTwo] = await createAccountsFilled(program, 2);
+      //const [playerOne, playerTwo] = await createAccountsFilled(program, 2);
+
+      await fillAccounts(program, [playerOne, playerTwo]);
+      let configState = await program.account.configData.fetch(configPDA);
+      const rouletteCount = configState.rouletteCount;
+      const [roulettePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), Buffer.from(rouletteCount.toString())],
+        program.programId
+      );
+
+      const [user1RoullettePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), playerOne.publicKey.toBuffer()],
+        program.programId
+      );
+
+      const [user2RoullettePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), playerTwo.publicKey.toBuffer()],
+        program.programId
+      );
 
       const mint = await createMint(
         program.provider.connection,
@@ -123,24 +190,25 @@ describe("soluck-roulette-program", () => {
         null,
         0
       );
-
-      const fromAta = await createAssociatedTokenAccount(
+      const fromAta_player1 = await getOrCreateAssociatedTokenAccount(
         connection,
         admin,
         mint,
         playerOne.publicKey
       );
 
-      const [escrowPDA] = PublicKey.findProgramAddressSync(
-        [Buffer.from("escrow"), playerOne.publicKey.toBuffer()],
-        program.programId
+      const fromAta_player2 = await getOrCreateAssociatedTokenAccount(
+        connection,
+        admin,
+        mint,
+        playerTwo.publicKey
       );
 
       const toAta = await getOrCreateAssociatedTokenAccount(
         connection,
         playerOne,
         mint,
-        escrowPDA,
+        roulettePDA,
         true
       );
 
@@ -149,31 +217,62 @@ describe("soluck-roulette-program", () => {
         connection,
         admin,
         mint,
-        fromAta,
+        fromAta_player1.address,
         admin.publicKey,
         mintAmount
       );
 
-      let playerOneBalance = await connection.getTokenAccountBalance(fromAta);
-      console.log("1bal1: ", playerOneBalance.value.uiAmount);
+      await mintTo(
+        connection,
+        admin,
+        mint,
+        fromAta_player2.address,
+        admin.publicKey,
+        mintAmount
+      );
+
+      let playerOneBalance = await connection.getTokenAccountBalance(
+        fromAta_player1.address
+      );
+      //console.log("1bal1: ", playerOneBalance.value.uiAmount);
       await program.methods
         .enterRoulette()
         .accounts({
+          userWinningAccount: user1RoullettePDA,
           roulette: roulettePDA,
-          escrow: escrowPDA,
           sender: playerOne.publicKey,
-          fromAta: fromAta,
+          fromAta: fromAta_player1.address,
           toAta: toAta.address,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([playerOne])
         .rpc();
-      playerOneBalance = await connection.getTokenAccountBalance(fromAta);
-      console.log("2bal0: ", playerOneBalance.value.uiAmount);
+
+      await program.methods
+        .enterRoulette()
+        .accounts({
+          userWinningAccount: user2RoullettePDA,
+          roulette: roulettePDA,
+          sender: playerTwo.publicKey,
+          fromAta: fromAta_player2.address,
+          toAta: toAta.address,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([playerTwo])
+        .rpc();
+      playerOneBalance = await connection.getTokenAccountBalance(
+        fromAta_player1.address
+      );
+
+      /* tokens = await connection.getTokenAccountsByOwner(roulettePDA, {
+        programId: TOKEN_PROGRAM_ID,
+      });*/
+
+      /*
       await program.methods
         .claimWinnings()
         .accounts({
-          escrow: escrowPDA,
+          escrow: roulettePDA,
           sender: playerOne.publicKey,
           fromAta: toAta.address,
           toAta: fromAta,
@@ -185,14 +284,26 @@ describe("soluck-roulette-program", () => {
       console.log("3bal1: ", playerOneBalance.value.uiAmount);
 
       let rouletteState = await program.account.rouletteData.fetch(roulettePDA);
-      //console.log("aft rouletteState: ", rouletteState);
+      //console.log("aft rouletteState: ", rouletteState);*/
     } catch (error) {
       console.log(error);
     }
   });
 
   it("finish roulette", async () => {
+    function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    await delay(3000);
     try {
+      let configState = await program.account.configData.fetch(configPDA);
+
+      const rouletteCount = configState.rouletteCount;
+      const [roulettePDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), Buffer.from(rouletteCount.toString())],
+        program.programId
+      );
+
       const rng = new anchor.BN(100);
       await program.methods
         .getRandomDecideWinner(rng)
@@ -204,7 +315,77 @@ describe("soluck-roulette-program", () => {
         .signers([admin])
         .rpc();
       let rouletteState = await program.account.rouletteData.fetch(roulettePDA);
-      console.log("aft rouletteState: ", rouletteState);
+      //console.log("aft rouletteState: ", rouletteState);
+    } catch (error) {
+      console.log(error);
+    }
+  });
+
+  it("claim winnings roulette", async () => {
+    function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    await delay(6000);
+    try {
+      const [userPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("roulette"), playerOne.publicKey.toBuffer()],
+        program.programId
+      );
+
+      let playerState = await program.account.userRouletteData.fetch(userPDA);
+      // console.log("claimer playerState: ", playerState);
+
+      const [roulettePDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("roulette"),
+          Buffer.from(playerState.winningRouletteIndexes[0].toString()),
+        ],
+        program.programId
+      );
+      let rouletteState = await program.account.rouletteData.fetch(roulettePDA);
+
+      //console.log("  roulettePDA state: ", rouletteState);
+      //console.log("  caller : ", playerOne.publicKey);
+
+      const tokensAccountsRoulette = await connection.getTokenAccountsByOwner(
+        roulettePDA,
+        {
+          programId: TOKEN_PROGRAM_ID,
+        }
+      );
+      const rouletteTokenAccountKey = tokensAccountsRoulette.value[0].pubkey;
+      const rouletteTokenAccount = tokensAccountsRoulette.value[0].account;
+      const mintAcc = await getAccount(connection, rouletteTokenAccountKey);
+      console.log("rouletteTokenAccountKey: ", rouletteTokenAccountKey);
+
+      console.log("rouletteTokenAccount: ", rouletteTokenAccount);
+      console.log("mintAcc: ", mintAcc);
+
+      const playerAta = await getOrCreateAssociatedTokenAccount(
+        connection,
+        admin,
+        mintAcc.mint,
+        playerOne.publicKey
+      );
+      const toAta = playerAta.address;
+      console.log("playerAta: ", playerAta);
+      let playerOneBalance = await connection.getTokenAccountBalance(toAta);
+      console.log("before: ", playerOneBalance.value.uiAmount);
+      await program.methods
+        .claimWinnings()
+        .accounts({
+          roulette: roulettePDA,
+          sender: playerOne.publicKey,
+          config: configPDA,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          fromAta: rouletteTokenAccountKey,
+          toAta: toAta,
+        })
+        .signers([playerOne])
+        .rpc();
+
+      playerOneBalance = await connection.getTokenAccountBalance(toAta);
+      console.log("after: ", playerOneBalance.value.uiAmount);
     } catch (error) {
       console.log(error);
     }

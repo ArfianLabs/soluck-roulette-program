@@ -26,6 +26,25 @@ export const createAccountsFilled = async (program: any, many: number) => {
   return accounts;
 };
 
+export const fillAccounts = async (
+  program: any,
+  accounts: anchor.web3.Keypair[]
+) => {
+  for (let acc of accounts) {
+    const requestAirdrop = await program.provider.connection.requestAirdrop(
+      acc.publicKey,
+      LAMPORTS_PER_SOL * 100 // 100 SOL
+    );
+    const latestBlockHash =
+      await program.provider.connection.getLatestBlockhash();
+    await program.provider.connection.confirmTransaction({
+      blockhash: latestBlockHash.blockhash,
+      lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+      signature: requestAirdrop,
+    });
+  }
+};
+
 export const createAccountsEmpty = async (program: any, many: number) => {
   const accounts: anchor.web3.Keypair[] = [];
 

@@ -9,22 +9,20 @@ declare_id!("EesrPZXx8b6hwLcAMBFtA7RZHyuvs7oFshBoDiK23VBk");
 #[program]
 pub mod soluck_roulette_program {
 
+    use solana_program::{program::invoke_signed, system_instruction};
+
     use super::*;
 
     pub fn init_config(ctx: Context<InitConfig>) -> Result<()> {
         let config = &mut ctx.accounts.config;
-        let roulette = &mut ctx.accounts.roulette;
+
         if config.is_init == true {
             return Err(RouletteErrors::ConfigAlreadyInitialized.into());
         }
 
         config.is_init = true;
-        config.roulette_count = 0;
+        config.roulette_count = 1;
         config.auth = *ctx.accounts.auth.key;
-
-        roulette.status = 0;
-        roulette.players = Vec::new();
-        roulette.values = Vec::new();
 
         Ok(())
     }
@@ -43,18 +41,20 @@ pub mod soluck_roulette_program {
     }
 
     pub fn start_roulette(ctx: Context<InitRoulette>) -> Result<()> {
-        let config = &mut ctx.accounts.config;
+        let config = &ctx.accounts.config;
         let signer = ctx.accounts.auth.key;
 
         if *signer != config.auth {
             return Err(RouletteErrors::NotAuth.into());
         }
 
-        let roulette = &mut ctx.accounts.roulette;
+        let roulette_bump = ctx.bumps.roulette;
 
+        let roulette = &mut ctx.accounts.roulette;
         roulette.status = 1;
         roulette.players = Vec::new();
         roulette.values = Vec::new();
+        roulette.bump = roulette_bump;
 
         Ok(())
     }
@@ -66,12 +66,14 @@ pub mod soluck_roulette_program {
             return Err(RouletteErrors::InProgress.into());
         }
 
-        let escrow = &mut ctx.accounts.escrow;
-        escrow.player = *ctx.accounts.sender.key;
+        // Initialize if user winning account is not initialized
+        let user_winning_account = &mut ctx.accounts.user_winning_account;
 
-        let escrow_bump = ctx.bumps.escrow;
-        escrow.bump = escrow_bump;
+        if user_winning_account.winning_roulette_indexes.len() == 0 {
+            user_winning_account.winning_roulette_indexes = Vec::new();
+        }
 
+        // Transfer SPL Token
         let destination = &ctx.accounts.to_ata;
         let source = &ctx.accounts.from_ata;
         let token_program = &ctx.accounts.token_program;
@@ -98,7 +100,7 @@ pub mod soluck_roulette_program {
     }
 
     pub fn set_floor_price(
-        ctx: Context<InitRoulette>,
+        ctx: Context<SetFloorPrice>,
         address: Pubkey,
         floor_price: u64,
     ) -> Result<()> {
@@ -122,25 +124,31 @@ pub mod soluck_roulette_program {
     }
 
     pub fn get_random_decide_winner(ctx: Context<GetRandomDecideWinner>, rng: u64) -> Result<()> {
+        let config = &ctx.accounts.config;
+        let signer = ctx.accounts.sender.key;
+
+        if *signer != config.auth {
+            return Err(RouletteErrors::NotAuth.into());
+        }
+
         let roulette = &mut ctx.accounts.roulette;
         let players = &roulette.players;
         let values = &roulette.values;
 
-        let total_value: u64 = values.iter().sum(); // 40
+        let total_value: u64 = values.iter().sum(); // 10
 
-        let adjusted_winning_number = (rng % total_value)+1; // 0 gelmiyor 1 eklenecek
+        let adjusted_winning_number = (rng % total_value) + 1; // 100%10 = 0 + 1 = 1
 
-        let mut cumulative_value: u64 = 0; 
+        let mut cumulative_value: u64 = 0;
         for (i, &value) in values.iter().enumerate() {
-            cumulative_value += value; // 10 
+            cumulative_value += value; // 10
 
             if adjusted_winning_number < cumulative_value {
                 roulette.winner = players[i];
                 break;
             }
-        } 
+        }
 
-        
         emit!(WinnerEvent {
             winner: roulette.winner,
         });
@@ -148,29 +156,48 @@ pub mod soluck_roulette_program {
         Ok(())
     }
 
-    pub fn claim_winnings(ctx: Context<ClaimWinnings>) -> Result<()> {
-        let escrow = &ctx.accounts.escrow;
-        
-        require!(
-            escrow.player == *ctx.accounts.sender.key,
-            RouletteErrors::InProgress
-        );
+    pub fn update_winner_account(ctx: Context<UpdateWinnerAccount>, index: u64) -> Result<()> {
+        let config = &ctx.accounts.config;
+        let signer = ctx.accounts.sender.key;
 
-        let bump = escrow.bump;
-        let seeds = &[b"escrow", ctx.accounts.sender.key.as_ref(), &[bump]];
+        if *signer != config.auth {
+            return Err(RouletteErrors::NotAuth.into());
+        }
+
+        let user_winning_account = &mut ctx.accounts.user_winning_account;
+        let winning_roulette_indexes = &mut user_winning_account.winning_roulette_indexes;
+
+        winning_roulette_indexes.push(index);
+
+        Ok(())
+    }
+
+    pub fn claim_winnings(ctx: Context<ClaimWinnings>) -> Result<()> {
+        let roulette = &ctx.accounts.roulette;
+        let config = &ctx.accounts.config;
+        let winner = roulette.winner;
+
+        if winner != *ctx.accounts.sender.key {
+            return Err(RouletteErrors::NotWinner.into());
+        }
+
+        let bump = roulette.bump;
+        let roulette_count_str = config.roulette_count.to_string();
+        let nft_count = roulette.players.len().try_into().unwrap();
+        let seeds = &[b"roulette", roulette_count_str.as_bytes(), &[bump]];
         let signer_seeds = &[&seeds[..]];
 
-        let cpi_accounts = SplTransfer {
+        let cpi_accounts: SplTransfer = SplTransfer {
             from: ctx.accounts.from_ata.to_account_info(),
             to: ctx.accounts.to_ata.to_account_info(),
-            authority: ctx.accounts.escrow.to_account_info(),
+            authority: ctx.accounts.roulette.to_account_info(),
         };
         let token_program = &ctx.accounts.token_program;
         let cpi_program = token_program.to_account_info();
 
         token::transfer(
             CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds),
-            1,
+            nft_count,
         )?;
 
         Ok(())
@@ -187,15 +214,6 @@ pub struct InitConfig<'info> {
         space = size_of::<ConfigData>()*2,
     )]
     pub config: Account<'info, ConfigData>,
-
-    #[account(
-        init,
-        seeds = [b"roulette"],
-        bump,
-        payer = auth,
-        space = size_of::<RouletteData>()*2,
-    )]
-    pub roulette: Account<'info, RouletteData>,
 
     #[account(mut)]
     pub auth: Signer<'info>,
@@ -214,6 +232,27 @@ pub struct ConfigData {
 pub struct InitRoulette<'info> {
     #[account(mut)]
     pub config: Account<'info, ConfigData>,
+
+    #[account(
+        init,
+        seeds = [b"roulette", config.roulette_count.to_string().as_bytes()],
+        bump,
+        payer = auth,
+         space = size_of::<RouletteData>()*2,
+    )]
+    pub roulette: Account<'info, RouletteData>,
+
+    #[account(mut)]
+    pub auth: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetFloorPrice<'info> {
+    #[account(mut)]
+    pub config: Account<'info, ConfigData>,
+
     #[account(mut)]
     pub roulette: Account<'info, RouletteData>,
 
@@ -229,18 +268,19 @@ pub struct RouletteData {
     pub players: Vec<Pubkey>,
     pub values: Vec<u64>,
     pub winner: Pubkey,
+    pub bump: u8,
 }
 
 #[derive(Accounts)]
-pub struct EnterRoulette<'info> {     
+pub struct EnterRoulette<'info> {
     #[account(
         init,
-        seeds = [b"escrow", sender.key().as_ref()],
+        seeds = [b"roulette", sender.key().as_ref()],
         bump,
         payer = sender,
-        space = 8+size_of::<EscrowData>(),
+         space = size_of::<UserRouletteData>()*10,
     )]
-    pub escrow: Account<'info, EscrowData>,
+    pub user_winning_account: Account<'info, UserRouletteData>,
 
     #[account(mut)]
     pub roulette: Account<'info, RouletteData>,
@@ -255,13 +295,21 @@ pub struct EnterRoulette<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[account]
+pub struct UserRouletteData {
+    pub winning_roulette_indexes: Vec<u64>,
+}
+
 #[derive(Accounts)]
 pub struct ClaimWinnings<'info> {
     #[account(mut)]
-    pub escrow: Account<'info, EscrowData>,
-
+    pub roulette: Account<'info, RouletteData>,
+    #[account(mut)]
+    pub config: Account<'info, ConfigData>,
     #[account(mut)]
     pub sender: Signer<'info>,
+    /// CHECK: Allow passing additional accounts as remaining accounts
+    //pub remaining_accounts: Vec<AccountInfo<'info>>,
     #[account(mut)]
     pub from_ata: Account<'info, TokenAccount>,
 
@@ -278,6 +326,16 @@ pub struct GetRandomDecideWinner<'info> {
     pub config: Account<'info, ConfigData>,
     #[account(mut)]
     pub roulette: Account<'info, RouletteData>,
+    #[account(mut)]
+    pub sender: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateWinnerAccount<'info> {
+    #[account(mut)]
+    pub config: Account<'info, ConfigData>,
+    #[account(mut)]
+    pub user_winning_account: Account<'info, UserRouletteData>,
     #[account(mut)]
     pub sender: Signer<'info>,
 }
@@ -307,4 +365,6 @@ pub enum RouletteErrors {
     NotAuth,
     #[msg("Roulette in progress")]
     InProgress,
+    #[msg("Not the winner")]
+    NotWinner,
 }
